@@ -687,5 +687,212 @@ JOIN dealerships d ON de.dealership_id = d.dealership_id
 WHERE e.first_name = 'Deb' AND e.last_name = 'Gioan'
 GROUP BY d.business_name;
 
+-- Book 3 practice
+UPDATE dealershipemployees
+SET dealership_id = 20
+WHERE employee_id = 9;
+
+SELECT *
+FROM dealershipemployees
+ORDER BY employee_id;
+
+UPDATE sales
+SET payment_method = 'mastercard'
+WHERE invoice_number = '9086714242';
+
+SELECT *
+FROM sales
+WHERE invoice_number = '9086714242';
+
+DELETE FROM sales WHERE invoice_number = '2436217483';
+
+-- Step 1: Drop the foreign key constraint
+ALTER TABLE dealershipemployees
+DROP CONSTRAINT dealershipemployees_employee_id_fkey;
+
+ALTER TABLE sales 
+DROP CONSTRAINT sales_employee_id_fkey;
+
+-- Step 2: Delete the employee
+DELETE FROM employees WHERE employee_id = 35;
+
+-- Step 3: Recreate the foreign key constraint
+ALTER TABLE dealershipemployees
+ADD CONSTRAINT dealershipemployees_employee_id_fkey
+FOREIGN KEY (employee_id) REFERENCES employees (employee_id);
+
+CREATE OR REPLACE FUNCTION SellCar(vehicleID INT) RETURNS VOID AS $$
+BEGIN
+    -- Update vehicle inventory by setting is_sold to True
+    UPDATE Vehicles
+    SET is_sold = TRUE
+    WHERE vehicle_id = vehicleID;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ReturnCar(vehicleID INT, salesRecordID INT) RETURNS VOID AS $$
+BEGIN
+    -- Add the car back to the inventory
+    UPDATE Vehicles
+    SET is_sold = FALSE
+    WHERE vehicle_id = vehicleID;
+
+    -- Mark original sales record as sale_returned = TRUE
+    UPDATE SalesRecords
+    SET sale_returned = TRUE
+    WHERE sales_record_id = salesRecordID;
+
+    -- Log oil change in OilChangeLogs table
+    INSERT INTO OilChangeLogs (vehicle_id, change_date)
+    VALUES (vehicleID, CURRENT_TIMESTAMP);
+END;
+$$ LANGUAGE plpgsql;
+
+--
+CREATE FUNCTION set_pickup_date() 
+  RETURNS TRIGGER 
+  LANGUAGE PlPGSQL
+AS $$
+BEGIN
+  -- trigger function logic
+  UPDATE sales
+  SET pickup_date = NEW.purchase_date + integer '7'
+  WHERE sales.sale_id = NEW.sale_id;
+  
+  RETURN NULL;
+END;
+$$
+
+-- Trigger
+CREATE TRIGGER new_sale_made
+  AFTER INSERT
+  ON sales
+  FOR EACH ROW
+  EXECUTE PROCEDURE set_pickup_date();
+ 
+-- 1. Create a trigger for when a new Sales record is added, set the purchase date to 3 days from the current date.
+ 
+CREATE FUNCTION set_sale_date() 
+  RETURNS TRIGGER 
+  LANGUAGE PLPGSQL
+AS $$
+BEGIN
+  -- trigger function logic
+  UPDATE sales
+  SET pickup_date = CURRENT_DATE + interval '3 days'
+  WHERE sales.sale_id = NEW.sale_id;
+  
+  RETURN NULL;
+END;
+$$
+
+
+-- Trigger
+CREATE TRIGGER new_sales_record
+  AFTER INSERT
+  ON sales
+  FOR EACH ROW
+  EXECUTE PROCEDURE set_sale_date();
+ 
+--2. Create a trigger for updates to the Sales table. If the pickup date is on or before the purchase date, set the 
+--pickup date to 7 days after the purchase date. If the pickup date is after the purchase date but less than 7 days 
+--out from the purchase date, add 4 additional days to the pickup date.
+ 
+ -- Trigger for updates to Sales table
+CREATE OR REPLACE FUNCTION update_pickup_date()
+RETURNS TRIGGER
+LANGUAGE PLPGSQL
+AS $$
+BEGIN
+  -- Check if the new pickup_date is on or before the purchase_date
+  IF NEW.pickup_date <= NEW.purchase_date THEN
+    -- Set pickup_date to 7 days after the purchase_date
+    NEW.pickup_date = NEW.purchase_date + interval '7 days';
+  ELSE
+    -- Check if pickup_date is less than 7 days out from the purchase_date
+    IF NEW.pickup_date - NEW.purchase_date < interval '7 days' THEN
+      -- Add 4 additional days to pickup_date
+      NEW.pickup_date = NEW.pickup_date + interval '4 days';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+-- Trigger
+CREATE TRIGGER update_sale_pickup_date
+BEFORE UPDATE
+ON sales
+FOR EACH ROW
+EXECUTE FUNCTION update_pickup_date();
+
+SELECT *
+FROM dealerships;
+
+-- 1. Because Carnival is a single company, we want to ensure that there is consistency 
+--    in the data provided to the user. Each dealership has it's own website but we want to 
+--    make sure the website URL are consistent and easy to remember. Therefore, any time a new 
+--    dealership is added or an existing dealership is updated, we want to ensure that the website 
+--    URL has the following format: http://www.carnivalcars.com/{name of the dealership with underscores separating words}.
+CREATE OR REPLACE FUNCTION generate_website_url(business_name text)
+RETURNS text
+LANGUAGE SQL
+AS $$
+  SELECT 'http://www.carnivalcars.com/' || REPLACE(LOWER(business_name), ' ', '_');
+$$;
+
+-- Trigger for new dealership insertion or updates
+CREATE OR REPLACE FUNCTION update_dealership_website_url()
+RETURNS TRIGGER
+LANGUAGE PLPGSQL
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+    NEW.website = generate_website_url(NEW.business_name);
+  END IF;
+  
+  RETURN NEW;
+END;
+$$;
+
+
+-- Trigger
+CREATE TRIGGER ensure_website_url_format
+BEFORE INSERT OR UPDATE
+ON dealerships
+FOR EACH ROW
+EXECUTE FUNCTION update_dealership_website_url();
+
+INSERT INTO dealerships (business_name) VALUES ('Serra Truck Dealers');
+
+SELECT * FROM dealerships WHERE business_name = 'Serra Truck Dealers';
+
+
+-- 1-3
+CREATE OR REPLACE FUNCTION update_dealership_info()
+RETURNS TRIGGER
+LANGUAGE PLPGSQL
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+    -- Set the website_url based on business_name
+    NEW.website = generate_website_url(NEW.business_name);
+
+    -- Check if tax_id is provided and state_name is not NULL
+    IF NEW.tax_id IS NOT NULL AND NEW.state_name IS NOT NULL THEN
+      -- Append state_name to tax_id with two hyphens
+      NEW.tax_id = NEW.tax_id || '--' || NEW.state_name;
+    END IF;
+    
+    -- Check if phone is NULL or empty
+    IF NEW.phone IS NULL OR NEW.phone = '' THEN
+      NEW.phone = '777-111-0305'; -- Set default phone number
+    END IF;
+  END IF;
+  
+  RETURN NEW;
+END;
+$$;
 
 
